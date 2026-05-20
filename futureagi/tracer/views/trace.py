@@ -38,8 +38,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
 
+from tracer.services.clickhouse.query_builders.base import NIL_UUID
+
 logger = structlog.get_logger(__name__)
-from futureagi.tracer.services.clickhouse.query_builders.base import NIL_UUID
 from model_hub.models.choices import AnnotationTypeChoices
 from model_hub.models.develop_annotations import AnnotationsLabels
 from model_hub.models.score import Score
