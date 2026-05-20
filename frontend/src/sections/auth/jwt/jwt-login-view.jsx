@@ -239,10 +239,7 @@ export default function JwtLoginView() {
     } catch (error) {
       const errorCode =
         error?.result?.error_code ||
-        error?.result?.errorCode ||
-        error?.error_code ||
-        error?.errorCode;
-
+        error?.error_code
       if (errorCode) {
         switch (errorCode) {
           case LOGIN_ERROR_CODES.IP_BLOCKED:
@@ -257,8 +254,7 @@ export default function JwtLoginView() {
           case LOGIN_ERROR_CODES.ACCOUNT_BLOCKED:
           case LOGIN_ERROR_CODES.TOO_MANY_ATTEMPTS: {
             const remaining =
-              error?.result?.block_time_remaining ||
-              error?.result?.blockTimeRemaining;
+              error?.result?.block_time_remaining
             const minutes = remaining ? Math.ceil(remaining / 60) : null;
             setErrorMsg(
               minutes
