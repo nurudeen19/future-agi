@@ -117,11 +117,6 @@ class TraceSessionView(BaseModelViewSetMixin, ModelViewSet):
 
             analytics = AnalyticsQueryService()
             if analytics.should_use_clickhouse(QueryType.TRACE_DETAIL):
-                # CH-only path post-TH-5562. PG fallback removed — a CH
-                # error propagates so the outer handler can return a 5xx
-                # with structured diagnostics instead of silently
-                # degrading to a 30 s PG aggregate that breaches
-                # ``statement_timeout``. Mirrors D-027 from PR #654.
                 return self._retrieve_clickhouse(
                     request, trace_session_id, trace_session, project_id, analytics
                 )
@@ -425,9 +420,6 @@ class TraceSessionView(BaseModelViewSetMixin, ModelViewSet):
                 }
             )
         except OperationalError as e:
-            # Postgres ``statement_timeout`` fire from any PG query reached
-            # while building the detail body. Return 504 so callers know
-            # the request is retryable instead of a generic 400.
             logger.exception(
                 "trace_session_retrieve_timeout",
                 session_id=str(self.kwargs.get("pk")),
@@ -550,19 +542,10 @@ class TraceSessionView(BaseModelViewSetMixin, ModelViewSet):
                 }
             )
 
-        # Get eval metrics from CH
+        # Resolve eval-config IDs in CH (avoids a tracer_eval_logger PG
+        # scan that grows linearly with eval traffic), then fetch the
+        # PG metadata by primary key.
         trace_ids = [r["trace_id"] for r in traces_data]
-
-        #
-        #   CustomEvalConfig.objects.filter(
-        #       id__in=EvalLogger.objects.filter(trace_id__in=trace_ids).values(...))
-        #
-        # which is a Postgres scan of ``tracer_eval_logger`` — the table
-        # that grows linearly with eval traffic and was traced as one
-        # trigger of the TH-5562 cascade. Push that scan to CH (the
-        # ``tracer_eval_logger`` mirror is already used by the CH eval-
-        # metrics query below) and keep PG only for the small metadata
-        # lookup by primary key, which is always fast.
         eval_configs: list = []
         if trace_ids:
             try:
@@ -583,9 +566,6 @@ class TraceSessionView(BaseModelViewSetMixin, ModelViewSet):
                     if row.get("config_id")
                 ]
             except Exception as e:
-                # CH lookup failure must not crash the page — eval columns
-                # simply won't render. The CH error is already logged by
-                # the client layer.
                 logger.warning(
                     "ch_eval_config_id_lookup_failed",
                     session_id=str(trace_session_id),
@@ -594,7 +574,6 @@ class TraceSessionView(BaseModelViewSetMixin, ModelViewSet):
                 pre_config_ids = []
 
             if pre_config_ids:
-                # PK-bounded PG fetch — small list, always cheap.
                 eval_configs = list(
                     CustomEvalConfig.objects.filter(
                         id__in=pre_config_ids,

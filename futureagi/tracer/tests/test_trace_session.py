@@ -129,12 +129,10 @@ class TestTraceSessionRetrieveAPI:
         assert metadata["previous_session_id"] is None
         assert metadata["next_session_id"] is None
 
-    # TH-5562: navigation is CH-only since the fix. The test environment
-    # routes ``CH_ROUTE_SESSION_ANALYTICS`` to postgres by default and
-    # doesn't seed CH, so we monkeypatch ``_try_session_navigation_ch``
-    # to simulate the CH layer returning known neighbours. This pins the
-    # contract "view forwards what CH gives it" without needing real CH
-    # data in unit tests.
+    # The test env routes CH_ROUTE_SESSION_ANALYTICS to postgres and does
+    # not seed ClickHouse, so the navigation tests below monkeypatch
+    # _try_session_navigation_ch to simulate CH returning known
+    # neighbours.
 
     def test_retrieve_session_navigation_middle_session(
         self, auth_client, observe_project, monkeypatch
@@ -214,10 +212,8 @@ class TestTraceSessionRetrieveAPI:
     def test_retrieve_session_navigation_returns_none_when_ch_unavailable(
         self, auth_client, observe_project
     ):
-        """TH-5562: with CH disabled in test settings and PG fallback
-        removed, navigation must return (None, None) — the page still
-        renders successfully, just without prev/next arrows.
-        """
+        """With CH disabled and no PG fallback, navigation returns
+        ``(None, None)`` and the page still renders 200."""
         base = timezone.now()
         _create_session_with_span(observe_project, "A", base - timedelta(minutes=1))
         s_focus = _create_session_with_span(observe_project, "B", base)
@@ -343,11 +339,10 @@ class TestTraceSessionExportAPI:
 
 @pytest.mark.integration
 class TestGetSessionNavigationCHOnly:
-    """TH-5562 contract tests for ``tracer.utils.session``.
+    """Contract tests for ``tracer.utils.session.get_session_navigation``.
 
-    Navigation is CH-only since the fix. PG fallback is gone; the heavy
-    ``ObservationSpan`` aggregate that breached the 30 s
-    ``statement_timeout`` is no longer reachable from this code path.
+    Navigation is CH-only — there is no Postgres fallback. On a CH
+    failure the wrapper must return ``(None, None)``.
     """
 
     @staticmethod
@@ -414,26 +409,23 @@ class TestGetSessionNavigationCHOnly:
         assert result == (None, None)
 
     def test_pg_navigation_helper_is_no_longer_present(self):
-        """Structural guard: the heavy PG body must stay deleted. If a
-        function with this name is added back, the wrapper might be
-        tempted to call it and re-introduce the 30 s timeout.
-        """
+        """Structural guard: the Postgres navigation helper must not be
+        re-added — its full-project span aggregate breached the 30 s
+        ``statement_timeout``."""
         from tracer.utils import session as session_utils
 
-        assert not hasattr(session_utils, "_get_session_navigation_pg"), (
-            "PG navigation helper resurrected — see TH-5562. "
-            "Navigation must remain CH-only."
-        )
+        assert not hasattr(
+            session_utils, "_get_session_navigation_pg"
+        ), "Navigation must remain ClickHouse-only."
 
 
 @pytest.mark.integration
 class TestTraceSessionRetrieveErrorHandling:
-    """TH-5562 contract tests for ``TraceSessionView.retrieve``.
+    """Contract tests for ``TraceSessionView.retrieve``.
 
-    A CH error must NOT be silently caught and turned into a PG run;
-    instead the request must return a proper error (504 for
-    ``OperationalError``, 400 otherwise) without ever touching the
-    legacy PG body.
+    CH errors must surface as proper HTTP status codes (504 on
+    ``OperationalError``, 400 otherwise) and must not silently invoke
+    the legacy Postgres body.
     """
 
     def _force_ch_route(self, monkeypatch):
@@ -448,9 +440,8 @@ class TestTraceSessionRetrieveErrorHandling:
     def test_retrieve_returns_504_on_postgres_statement_timeout(
         self, auth_client, trace_session, monkeypatch
     ):
-        """Any ``OperationalError`` raised inside the CH detail handler
-        surfaces as 504 Gateway Timeout — not as a 400 with the raw
-        psycopg string the user used to see in TH-5562."""
+        """``OperationalError`` from the CH detail handler must surface
+        as HTTP 504, not 400 with a raw psycopg string."""
         from django.db import OperationalError
 
         from tracer.views import trace_session as view_module
@@ -519,9 +510,7 @@ class TestTraceSessionRetrieveErrorHandling:
         self._force_ch_route(monkeypatch)
 
         response = auth_client.get(f"/tracer/trace-session/{trace_session.id}/")
-        # The real assertion is that AssertionError above didn't fire.
-        # Both 504 (OperationalError → handled) and 400 (other) are
-        # legitimate responses; what matters is the PG body stayed cold.
+        # The real assertion is that AssertionError above did not fire.
         assert response.status_code in (
             status.HTTP_504_GATEWAY_TIMEOUT,
             status.HTTP_400_BAD_REQUEST,
@@ -530,10 +519,10 @@ class TestTraceSessionRetrieveErrorHandling:
 
 @pytest.mark.integration
 class TestRetrieveClickhouseInnerPGBound:
-    """TH-5562: the only PG hop inside ``_retrieve_clickhouse`` (fetch
-    of ``CustomEvalConfig`` via ``EvalLogger``) is bounded by a 5 s
-    ``statement_timeout`` and degrades to an empty config list on
-    timeout. The page must still render."""
+    """The ``CustomEvalConfig`` metadata fetch is the only Postgres hop
+    inside ``_retrieve_clickhouse``; a failure there must degrade
+    gracefully (200 with empty eval columns or 504), never bubble as
+    an unhandled 500."""
 
     def test_eval_configs_degrade_to_empty_on_pg_timeout(
         self, auth_client, trace_session, monkeypatch

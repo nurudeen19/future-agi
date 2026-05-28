@@ -82,11 +82,9 @@ class SessionAnalyticsQueryBuilder(BaseQueryBuilder):
         """
         params = dict(self.params)
 
-        # ``trace_session_id`` is a UUID column. Comparing it to '' makes
-        # CH 25.3 try to coerce '' -> UUID and raise
-        # ``Code 376: Cannot parse uuid``, which is logged in prod (TH-5562)
-        # — use ``IS NOT NULL`` instead. The NIL-UUID check on the next
-        # line still excludes spans with the sentinel "no session" value.
+        # trace_session_id is UUID; comparing to '' makes CH coerce '' -> UUID
+        # and raise Code 376. Use IS NOT NULL; the NIL-UUID line still
+        # excludes the "no session" sentinel.
         query = f"""
         SELECT
             trace_session_id,

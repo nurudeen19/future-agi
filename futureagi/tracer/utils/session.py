@@ -8,13 +8,10 @@ logger = structlog.get_logger(__name__)
 
 
 def _try_session_navigation_ch(request, project_id, current_session_id):
-    """Attempt to compute session navigation using ClickHouse.
+    """Compute session navigation via ClickHouse.
 
-    Returns (next_session_id, previous_session_id) on success, or
-    ``None`` if ClickHouse is disabled or the query failed. Callers
-    must treat ``None`` as "no neighbours available" and render the page
-    without the prev/next arrows — Postgres fallback is intentionally
-    not invoked any more (TH-5562 / D-027).
+    Returns ``(next_session_id, previous_session_id)`` on success, or
+    ``None`` if ClickHouse is disabled or the query failed.
     """
     from tracer.services.clickhouse.query_builders.session_analytics import (
         SessionAnalyticsQueryBuilder,
@@ -144,10 +141,6 @@ def _try_session_navigation_ch(request, project_id, current_session_id):
         return next_session_id, previous_session_id
 
     except Exception:
-        # Log at ERROR level (not warning) — historically this was a quiet
-        # "falling back to PG" warning that hid real CH bugs from Sentry.
-        # With CH-only navigation (TH-5562 / D-027) we want the stack
-        # trace surfaced so operators see it on the dashboard.
         logger.exception(
             "ch_session_navigation_failed",
             project_id=str(project_id),
@@ -158,11 +151,8 @@ def _try_session_navigation_ch(request, project_id, current_session_id):
 def get_session_navigation(request, project_id, current_session_id):
     """Return ``(next_session_id, previous_session_id)`` for the detail UI.
 
-    CH-only since TH-5562. If ClickHouse fails (or is disabled) the
-    function returns ``(None, None)`` and the page renders without the
-    prev/next arrows — the Postgres fallback was scanning every span in
-    the project and breaching the 30 s ``statement_timeout``. The CH
-    error is logged with stack trace by ``_try_session_navigation_ch``.
+    Returns ``(None, None)`` when ClickHouse is unavailable; callers
+    render the page without prev/next arrows in that case.
     """
     ch_result = _try_session_navigation_ch(request, project_id, current_session_id)
     if ch_result is None:
